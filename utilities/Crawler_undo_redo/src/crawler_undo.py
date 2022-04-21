@@ -75,10 +75,14 @@ def crawler_undo_options(args):
 
     options, unknown = parser.parse_known_args(args)
 
-    if not (options.database_name is not None and options.timestamp is not None):
+    if options.database_name is None or options.timestamp is None:
         import boto3 # Import is done here to ensure script does not fail in case boto3 is not required.
         glue_endpoint = DEFAULT_GLUE_ENDPOINT
-        glue = boto3.client('glue', endpoint_url="https://%s.%s.amazonaws.com" % (glue_endpoint, options.region))
+        glue = boto3.client(
+            'glue',
+            endpoint_url=f"https://{glue_endpoint}.{options.region}.amazonaws.com",
+        )
+
         crawler = glue.get_crawler(Name=options.crawler_name)['Crawler']
 
     if options.database_name is not None:

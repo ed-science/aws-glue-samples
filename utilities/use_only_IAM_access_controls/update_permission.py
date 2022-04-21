@@ -34,7 +34,10 @@ def prompt(message):
         prompt(message)
 
 
-prompt(f"Are you sure to make modifications on Lake Formation permissions to use only IAM access control? (y/n): ")
+prompt(
+    "Are you sure to make modifications on Lake Formation permissions to use only IAM access control? (y/n): "
+)
+
 
 glue = session.client('glue')
 lakeformation = session.client('lakeformation')
@@ -142,7 +145,7 @@ def get_catalog_id(resource):
     for key in resource.keys():
         if isinstance(resource[key], dict):
             return get_catalog_id(resource[key])
-        elif 'CatalogId' == key:
+        elif key == 'CatalogId':
             return resource[key]
 
 

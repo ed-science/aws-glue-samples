@@ -122,16 +122,16 @@ expected_count = 2
 
 assert datasource0.schema() == expected_schema
 
-print("expected schema: " + str(expected_schema.jsonValue()))
-print("result schema: " + str(datasource0.schema().jsonValue()))
+print(f"expected schema: {str(expected_schema.jsonValue())}")
+print(f"result schema: {str(datasource0.schema().jsonValue())}")
 print("result schema in tree structure: ")
 datasource0.printSchema()
 
 ## validate data count is euqal to expected count
 assert datasource0.count() == expected_count
 
-print("expected record count: " + str(expected_count))
-print("result record count: " + str(datasource0.count()))
+print(f"expected record count: {expected_count}")
+print(f"result record count: {str(datasource0.count())}")
 
 ######################################## write data to s3 ########################################
 datasource0.write(

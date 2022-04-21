@@ -231,7 +231,7 @@ def batch_items_within_partition(sql_context, df, key_col, value_col, values_col
     :return: DataFrame of values grouped by key within each partition
     """
     def group_by_key(it):
-        grouped = dict()
+        grouped = {}
         for row in it:
             (k, v) = (row[key_col], row[value_col])
             if k in grouped:
@@ -258,11 +258,12 @@ def batch_metastore_partitions(sql_context, df_parts):
     """
     df_kv = df_parts.select(struct(['database', 'table', 'type']).alias('key'), 'item')
     batched_kv = batch_items_within_partition(sql_context, df_kv, key_col='key', value_col='item', values_col='items')
-    batched_parts = batched_kv.select(
+    return batched_kv.select(
         batched_kv.key.database.alias('database'),
         batched_kv.key.table.alias('table'),
-        batched_kv.key.type.alias('type'), batched_kv.items)
-    return batched_parts
+        batched_kv.key.type.alias('type'),
+        batched_kv.items,
+    )
 
 
 def register_methods_to_dataframe():
@@ -334,8 +335,7 @@ class HiveMetastoreTransformer:
 
     def join_with_params(self, df, df_params, id_col):
         df_params_map = self.transform_params(params_df=df_params, id_col=id_col)
-        df_with_params = df.join(other=df_params_map, on=id_col, how='left_outer')
-        return df_with_params
+        return df.join(other=df_params_map, on=id_col, how='left_outer')
 
     def transform_df_with_idx(self, df, id_col, idx, payloads_column_name, payload_type, payload_func):
         """
@@ -451,14 +451,14 @@ class HiveMetastoreTransformer:
 
     @staticmethod
     def udf_escape_chars(param_value):
-        ret_param_value = param_value.replace('\\', '\\\\')\
-            .replace('|', '\\|')\
-            .replace('"', '\\"')\
-            .replace('{', '\\{')\
-            .replace(':', '\\:')\
+        return (
+            param_value.replace('\\', '\\\\')
+            .replace('|', '\\|')
+            .replace('"', '\\"')
+            .replace('{', '\\{')
+            .replace(':', '\\:')
             .replace('}', '\\}')
-
-        return ret_param_value
+        )
 
     @staticmethod
     def udf_skewed_values_to_str():
@@ -604,12 +604,9 @@ class HiveMetastoreTransformer:
         # columns: (SD_ID: BigInt, skewedColumnNames: List[String])
         skewed_column_names = self.transform_ms_skewed_col_names(ms_skewed_col_names)
 
-        # columns: (SD_ID: BigInt, skewedColumnNames: List[String], skewedColumnValues: List[String],
-        # skewedColumnValueLocationMaps: Map[String, String])
-        skewed_info = skewed_column_names \
-            .join(other=skewed_column_value_location_maps, on='SD_ID', how='outer') \
-            .join(other=skewed_column_values, on='SD_ID', how='outer')
-        return skewed_info
+        return skewed_column_names.join(
+            other=skewed_column_value_location_maps, on='SD_ID', how='outer'
+        ).join(other=skewed_column_values, on='SD_ID', how='outer')
 
     # TODO: remove when escape special characters fix in DatacatalogWriter is pushed to production.
     def transform_param_value(self, df):
@@ -623,11 +620,9 @@ class HiveMetastoreTransformer:
         escaped_serde_params = self.transform_param_value(ms_serde_params)
 
         serde_with_params = self.join_with_params(df=ms_serdes, df_params=escaped_serde_params, id_col='SERDE_ID')
-        serde_info = serde_with_params.rename_columns(rename_tuples=[
-            ('NAME', 'name'),
-            ('SLIB', 'serializationLibrary')
-        ])
-        return serde_info
+        return serde_with_params.rename_columns(
+            rename_tuples=[('NAME', 'name'), ('SLIB', 'serializationLibrary')]
+        )
 
     def transform_storage_descriptors(self, ms_sds, ms_sd_params, ms_columns, ms_bucketing_cols, ms_serdes,
                                       ms_serde_params, ms_skewed_col_names, ms_skewed_string_list_values,
@@ -664,8 +659,9 @@ class HiveMetastoreTransformer:
 
         storage_descriptors_with_empty_sorted_cols = HiveMetastoreTransformer.fill_none_with_empty_list(
             storage_descriptors_renamed, 'sortColumns')
-        storage_descriptors_final = storage_descriptors_with_empty_sorted_cols.drop_columns(['SERDE_ID', 'CD_ID'])
-        return storage_descriptors_final
+        return storage_descriptors_with_empty_sorted_cols.drop_columns(
+            ['SERDE_ID', 'CD_ID']
+        )
 
     def transform_tables(self, db_tbl_joined, ms_table_params, storage_descriptors, ms_partition_keys):
         tbls_date_transformed = self.transform_timestamp_cols(db_tbl_joined, date_cols_map={
@@ -696,10 +692,10 @@ class HiveMetastoreTransformer:
         tbls_drop_invalid = tbls_dropped_cols.na.drop(how='any', subset=['name', 'database'])
         tbls_with_empty_part_cols = HiveMetastoreTransformer.fill_none_with_empty_list(
             tbls_drop_invalid, 'partitionKeys')
-        tbls_final = tbls_with_empty_part_cols.select(
-            'database', struct(remove(tbls_dropped_cols.columns, 'database')).alias('item')
+        return tbls_with_empty_part_cols.select(
+            'database',
+            struct(remove(tbls_dropped_cols.columns, 'database')).alias('item'),
         ).withColumn('type', lit('table'))
-        return tbls_final
 
     def transform_partitions(self, db_tbl_joined, ms_partitions, storage_descriptors, ms_partition_params,
                              ms_partition_key_vals):
@@ -723,12 +719,11 @@ class HiveMetastoreTransformer:
             'DB_ID', 'TBL_ID', 'PART_ID', 'SD_ID', 'PART_NAME', 'LINK_TARGET_ID'
         ])
         parts_drop_invalid = parts_dropped_cols.na.drop(how='any', subset=['values', 'namespaceName', 'tableName'])
-        parts_final = parts_drop_invalid.select(
+        return parts_drop_invalid.select(
             parts_drop_invalid['namespaceName'].alias('database'),
             parts_drop_invalid['tableName'].alias('table'),
-            struct(parts_drop_invalid.columns).alias('item')
+            struct(parts_drop_invalid.columns).alias('item'),
         ).withColumn('type', lit('partition'))
-        return parts_final
 
     def transform_databases(self, ms_dbs, ms_database_params):
         dbs_with_params = self.join_with_params(df=ms_dbs, df_params=ms_database_params, id_col='DB_ID')
@@ -739,9 +734,9 @@ class HiveMetastoreTransformer:
         ])
         dbs_dropped_cols = dbs_renamed.drop_columns(['DB_ID', 'OWNER_NAME', 'OWNER_TYPE'])
         dbs_drop_invalid = dbs_dropped_cols.na.drop(how='any', subset=['name'])
-        dbs_final = dbs_drop_invalid.select(struct(dbs_dropped_cols.columns).alias('item')) \
-            .withColumn('type', lit('database'))
-        return dbs_final
+        return dbs_drop_invalid.select(
+            struct(dbs_dropped_cols.columns).alias('item')
+        ).withColumn('type', lit('database'))
 
     def transform(self, hive_metastore):
         dbs_prefixed = HiveMetastoreTransformer.add_prefix_to_column(hive_metastore.ms_dbs, 'NAME', self.db_prefix)
@@ -794,9 +789,7 @@ class DataCatalogTransformer:
     """
     @staticmethod
     def udf_array_to_map(array):
-        if array is None:
-            return array
-        return dict((i, v) for i, v in enumerate(array))
+        return array if array is None else dict(enumerate(array))
 
     @staticmethod
     def udf_partition_name_from_keys_vals(keys, vals):
@@ -808,10 +801,7 @@ class DataCatalogTransformer:
         """
         if not keys or not vals:
             return ""
-        s_keys = []
-        for k in keys:
-            s_keys.append("%s(%s)" % (k['name'], k['type']))
-
+        s_keys = [f"{k['name']}({k['type']})" for k in keys]
         return ','.join(s_keys) + '=' + ','.join(vals)
 
     @staticmethod
@@ -839,9 +829,7 @@ class DataCatalogTransformer:
 
     @staticmethod
     def udf_with_non_null_locationuri(locationUri):
-        if locationUri is None:
-            return ""
-        return locationUri
+        return "" if locationUri is None else locationUri
 
     @staticmethod
     def generate_idx_for_df(df, id_name, col_name, col_schema):
@@ -866,9 +854,11 @@ class DataCatalogTransformer:
         date_to_udf_time_int = UserDefinedFunction(
             DataCatalogTransformer.udf_milliseconds_str_to_timestamp,
             IntegerType())
-        return df.withColumn(column + '_new', date_to_udf_time_int(col(column)))\
-            .drop(column)\
-            .withColumnRenamed(column + '_new', column)
+        return (
+            df.withColumn(f'{column}_new', date_to_udf_time_int(col(column)))
+            .drop(column)
+            .withColumnRenamed(f'{column}_new', column)
+        )
 
     @staticmethod
     def params_to_df(df, id_name):
@@ -931,9 +921,7 @@ class DataCatalogTransformer:
             .join(ms_dbs, tables.database == ms_dbs.NAME, 'inner')\
             .select(tables.database, tables.item, ms_dbs.DB_ID)\
             .select('DB_ID', 'database', 'item.*')# database col needed for later
-        ms_tbls = self.generate_id_df(ms_tbls_no_id, 'TBL_ID')
-
-        return ms_tbls
+        return self.generate_id_df(ms_tbls_no_id, 'TBL_ID')
 
     def reformat_tbls(self, ms_tbls):
         # reformat CREATE_TIME and LAST_ACCESS_TIME
@@ -1207,7 +1195,7 @@ class DataCatalogTransformer:
         }
 
         for table_name, id_name in info_tuples:
-            hms_df = eval('hms.' + table_name)
+            hms_df = eval(f'hms.{table_name}')
 
             if hms_df and hms_df.count() > 0:
                 max_id = hms_df.select(id_name).rdd.max()[0] + 1
@@ -1240,7 +1228,7 @@ class DataCatalogTransformer:
     def __init__(self, sc, sql_context):
         self.sc = sc
         self.sql_context = sql_context
-        self.start_id_map = dict()
+        self.start_id_map = {}
 
 
 class HiveMetastore:
@@ -1254,13 +1242,17 @@ class HiveMetastore:
         """
         Load a JDBC table into Spark Dataframe
         """
-        return self.sql_context.read.format('jdbc').options(
-            url=connection['url'],
-            dbtable='%s.%s' % (db_name, table_name),
-            user=connection['user'],
-            password=connection['password'],
-            driver=MYSQL_DRIVER_CLASS
-        ).load()
+        return (
+            self.sql_context.read.format('jdbc')
+            .options(
+                url=connection['url'],
+                dbtable=f'{db_name}.{table_name}',
+                user=connection['user'],
+                password=connection['password'],
+                driver=MYSQL_DRIVER_CLASS,
+            )
+            .load()
+        )
 
     def write_table(self, connection, db_name='hive', table_name=None, df=None):
         """
@@ -1268,13 +1260,13 @@ class HiveMetastore:
         """
         return df.write.jdbc(
             url=connection['url'],
-            table='%s.%s' % (db_name, table_name),
+            table=f'{db_name}.{table_name}',
             mode='append',
             properties={
                 'user': connection['user'],
                 'password': connection['password'],
-                'driver': MYSQL_DRIVER_CLASS
-            }
+                'driver': MYSQL_DRIVER_CLASS,
+            },
         )
 
     def extract_metastore(self):
@@ -1354,8 +1346,8 @@ def get_output_dir(output_dir_parent):
     if not output_dir_parent:
         raise ValueError('output path cannot be empty')
     if output_dir_parent[-1] != '/':
-        output_dir_parent = output_dir_parent + '/'
-    return '%s%s/' % (output_dir_parent, strftime('%Y-%m-%d-%H-%M-%S', localtime()))
+        output_dir_parent = f'{output_dir_parent}/'
+    return f"{output_dir_parent}{strftime('%Y-%m-%d-%H-%M-%S', localtime())}/"
 
 
 def get_options(parser, args):
@@ -1416,18 +1408,32 @@ def etl_from_metastore(sc, sql_context, db_prefix, table_prefix, hive_metastore,
     # load
     output_path = get_output_dir(options['output_path'])
 
-    databases.write.format('json').mode('overwrite').save(output_path + 'databases')
-    tables.write.format('json').mode('overwrite').save(output_path + 'tables')
-    partitions.write.format('json').mode('overwrite').save(output_path + 'partitions')
+    databases.write.format('json').mode('overwrite').save(
+        f'{output_path}databases'
+    )
+
+    tables.write.format('json').mode('overwrite').save(f'{output_path}tables')
+    partitions.write.format('json').mode('overwrite').save(
+        f'{output_path}partitions'
+    )
 
 
 def etl_to_metastore(sc, sql_context, hive_metastore, options):
     # extract
     input_path = options['input_path']
 
-    databases = sql_context.read.json(path=input_path + 'databases', schema=METASTORE_DATABASE_SCHEMA)
-    tables = sql_context.read.json(path=input_path + 'tables', schema=METASTORE_TABLE_SCHEMA)
-    partitions = sql_context.read.json(path=input_path + 'partitions', schema=METASTORE_PARTITION_SCHEMA)
+    databases = sql_context.read.json(
+        path=f'{input_path}databases', schema=METASTORE_DATABASE_SCHEMA
+    )
+
+    tables = sql_context.read.json(
+        path=f'{input_path}tables', schema=METASTORE_TABLE_SCHEMA
+    )
+
+    partitions = sql_context.read.json(
+        path=f'{input_path}partitions', schema=METASTORE_PARTITION_SCHEMA
+    )
+
 
     # transform
     transform_databases_tables_partitions(sc, sql_context, hive_metastore, databases, tables, partitions)
@@ -1452,10 +1458,10 @@ def transform_databases_tables_partitions(sc, sql_context, hive_metastore, datab
 def validate_options_in_mode(options, mode, required_options, not_allowed_options):
     for option in required_options:
         if options.get(option) is None:
-            raise AssertionError('Option %s is required for mode %s' % (option, mode))
+            raise AssertionError(f'Option {option} is required for mode {mode}')
     for option in not_allowed_options:
         if options.get(option) is not None:
-            raise AssertionError('Option %s is not allowed for mode %s' % (option, mode))
+            raise AssertionError(f'Option {option} is not allowed for mode {mode}')
 
 
 def validate_aws_regions(region):
